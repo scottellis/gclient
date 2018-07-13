@@ -231,6 +231,13 @@ void read_response(int sock)
             perror("read");
             break;
         }
+
+        pos += len;
+
+        if (pos >= MAX_RESPONSE) {
+            printf("Overflow of response buffer\n");
+            break;
+        }
     }
 
     if (strlen(rx) > 0)
