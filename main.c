@@ -1,5 +1,5 @@
 /*
- * Example client for gserver 
+ * Example client for gserver
  */
 
 #include <stdio.h>
@@ -23,6 +23,7 @@
 #define CMD_DOWNLOAD 5
 #define CMD_UPGRADE 6
 #define CMD_REBOOT 7
+#define CMD_DOWNLOAD_SIG 8
 
 void sig_handler(int sig);
 void add_signal_handlers();
@@ -40,7 +41,7 @@ int msleep(int ms);
 volatile sig_atomic_t shutdown_signal = 0;
 int cmd;
 char netconfig_str[MAX_NETCONFIG_STR + 4];
-char upgrade_file[MAX_UPGRADE_FILE_PATH + 4];
+char download_file[MAX_UPGRADE_FILE_PATH + 4];
 char server_ip[32];
 int server_port;
 
@@ -61,7 +62,8 @@ void usage(char *argv_0)
     printf("              delimited fields in this order\n");
     printf("              ip:netmask:gateway:nameserver1:nameserver2\n");
     printf("              Only the first arg, 'dhcp' or ip address is required.\n");
-    printf("  -d <file>   download: download a rootfs tarball, should be xz compressed\n");
+    printf("  -d <file>   download: file should be a *.xz rootfs tarball\n");
+    printf("  -i <sig>    download signature file for xz rootfs tarball\n");
     printf("  -h          Show this help\n");
 
     printf("\nExamples:\n\n");
@@ -69,6 +71,7 @@ void usage(char *argv_0)
     printf("  %s -n dhcp\n", argv_0);
     printf("  %s -n 192.168.10.210:255.255.255.0:192.168.10.1:8.8.8.8\n", argv_0);
     printf("  %s -d gamry-prod-rootfs.tar.xz\n", argv_0);
+    printf("  %s -i gamry-prod-rootfs.tar.xz.sig\n", argv_0);
 
     exit(1);
 }
@@ -80,8 +83,8 @@ void parse_args(int argc, char **argv)
     cmd = CMD_UNKNOWN;
     strcpy(server_ip, "192.168.10.210");
     server_port = 1234;
- 
-    while ((opt = getopt(argc, argv, "s:p:d:n:vburh")) != -1) {
+
+    while ((opt = getopt(argc, argv, "s:p:d:i:n:vburh")) != -1) {
         switch (opt) {
         case 's':
             if (strlen(optarg) < 8 || strlen(optarg) > 15) {
@@ -105,25 +108,47 @@ void parse_args(int argc, char **argv)
         case 'd':
             len = strlen(optarg);
 
-            if (len < 4 || len > MAX_UPGRADE_FILE_PATH) {
-                printf("Invalid download image filename: %s", optarg);
+            if (len < 8 || len > MAX_UPGRADE_FILE_PATH) {
+                printf("Invalid download image filename: %s\n", optarg);
                 exit(1);
             }
-          
-            if (optarg[len - 3] != '.' || optarg[len - 2] != 'x' || optarg[len - 1] != 'z') {
-                printf("Download filename does not end in .xz: %s\n", optarg);
+
+            if (strcmp(&optarg[len-7], ".tar.xz")) {
+                printf("Download should be a *.tar.xz file\n");
                 exit(1);
             }
- 
+
             if (cmd != CMD_UNKNOWN) {
                 printf("Only one command may be specified\n");
                 exit(1);
             }
- 
-            strcpy(upgrade_file, optarg);
+
+            strcpy(download_file, optarg);
             cmd = CMD_DOWNLOAD;
             break;
-            
+
+        case 'i':
+            len = strlen(optarg);
+
+            if (len < 12 || len > MAX_UPGRADE_FILE_PATH) {
+                printf("Invalid download image filename: %s\n", optarg);
+                exit(1);
+            }
+
+            if (strcmp(&optarg[len-11], ".tar.xz.sig")) {
+                printf("Download should be a *.tar.xz.sig file\n");
+                exit(1);
+            }
+
+            if (cmd != CMD_UNKNOWN) {
+                printf("Only one command may be specified\n");
+                exit(1);
+            }
+
+            strcpy(download_file, optarg);
+            cmd = CMD_DOWNLOAD_SIG;
+            break;
+
         case 'n':
             if (strlen(optarg) < 4 || strlen(optarg) > MAX_NETCONFIG_STR) {
                 printf("Invalid netconfig str\n");
@@ -138,7 +163,7 @@ void parse_args(int argc, char **argv)
             strcpy(netconfig_str, optarg);
             cmd = CMD_NETCONFIG;
             break;
- 
+
         case 'v':
             if (cmd != CMD_UNKNOWN) {
                 printf("Only one option command be specified\n");
@@ -180,7 +205,7 @@ void parse_args(int argc, char **argv)
             usage(argv[0]);
             break;
         }
-    } 
+    }
 
     if (cmd == CMD_UNKNOWN)
         usage(argv[0]);
@@ -196,11 +221,11 @@ int main(int argc, char **argv)
     add_signal_handlers();
 
     sock = open_socket(server_ip, server_port);
-	
+
     if (sock < 0)
         exit(1);
 
-    if (cmd == CMD_DOWNLOAD)
+    if (cmd == CMD_DOWNLOAD || cmd == CMD_DOWNLOAD_SIG)
         run_download_command(sock);
     else
         run_command(sock);
@@ -227,7 +252,7 @@ void read_response(int sock)
         if (len == 0)
             break;
 
-        if (len < 1) { 
+        if (len < 1) {
             perror("read");
             break;
         }
@@ -247,7 +272,7 @@ void read_response(int sock)
 void run_command(int sock)
 {
     char tx[256];
-    
+
     switch (cmd) {
     case CMD_VERSION:
         strcpy(tx, "version\n");
@@ -272,16 +297,17 @@ void run_command(int sock)
         break;
 
     case CMD_DOWNLOAD:
+    case CMD_DOWNLOAD_SIG:
         printf("Shouldn't be here\n");
         return;
-   
+
     default:
         printf("Unknown command: %d\n", cmd);
         return;
     }
 
     if (write(sock, tx, strlen(tx)) < 0) {
-        perror("write"); 
+        perror("write");
         return;
     }
 
@@ -294,7 +320,7 @@ void run_download_command(int sock)
     char rx[32];
     char *binbuff = NULL;
 
-    FILE *fh = fopen(upgrade_file, "rb");
+    FILE *fh = fopen(download_file, "rb");
 
     if (!fh) {
         perror("fopen");
@@ -309,13 +335,13 @@ void run_download_command(int sock)
     size = ftell(fh);
 
     if (size < 1 || size > (64 * 1024 * 1024)) {
-        printf("upgrade file size is suspect: %d\n", size);
+        printf("download file size is suspect: %d\n", size);
         goto download_done;
     }
 
-    rewind(fh);  
+    rewind(fh);
 
-    binbuff = (char *) malloc(size);   
+    binbuff = (char *) malloc(size);
 
     if (!binbuff) {
         perror("malloc");
@@ -323,13 +349,18 @@ void run_download_command(int sock)
     }
 
     if (fread(binbuff, 1, size, fh) != size) {
-        printf("Failed to slurp upgrade file\n");
+        printf("Failed to slurp download file\n");
         goto download_done;
     }
-    
-    sprintf(rx, "download\n%d\n", size);
+
+    if (cmd == CMD_DOWNLOAD)
+        sprintf(rx, "download\n%d\n", size);
+    else
+        sprintf(rx, "download-sig\n%d\n", size);
 
     len = strlen(rx);
+
+    printf("DEBUG: sending: %s", rx);
 
     if (write(sock, rx, len) < 0) {
         perror("write");
@@ -365,7 +396,7 @@ void sig_handler(int sig)
     if (sig == SIGINT || sig == SIGTERM)
         shutdown_signal = 1;
 }
- 
+
 void add_signal_handlers()
 {
     struct sigaction sia;
@@ -377,11 +408,11 @@ void add_signal_handlers()
     if (sigaction(SIGINT, &sia, NULL) < 0) {
         perror("sigaction");
         exit(1);
-    } 
+    }
     else if (sigaction(SIGTERM, &sia, NULL) < 0) {
         perror("sigaction");
         exit(1);
-    } 
+    }
 }
 
 int open_socket(const char *ip, int port)
@@ -405,7 +436,7 @@ int open_socket(const char *ip, int port)
         close(sock);
         return -1;
     }
-    
+
     return sock;
 }
 
